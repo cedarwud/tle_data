@@ -1,0 +1,13 @@
+# 忽略日誌目錄
+logs/
+
+# 忽略備份目錄（如果有的話）
+backups/
+
+# 忽略臨時檔案
+*.tmp
+temp_*
+
+# 忽略系統檔案
+.DS_Store
+Thumbs.db

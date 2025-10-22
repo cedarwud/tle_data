@@ -413,9 +413,17 @@ download_constellation_data() {
     local final_json_file="$TLE_DATA_DIR/$constellation/json/${constellation}_${actual_date}.json"
 
     # 檢查是否需要更新現有檔案
+    # 重要：如果 TLE 被更新（updated_count > 0），強制下載 JSON 以保持同步
     local should_download=true
     local is_new_json_file=true
-    if [[ -f "$final_json_file" ]]; then
+
+    if [[ $updated_count -gt 0 ]]; then
+        # TLE 剛被下載/更新，強制下載對應的 JSON
+        if [[ -f "$final_json_file" ]]; then
+            is_new_json_file=false
+        fi
+        should_download=true
+    elif [[ -f "$final_json_file" ]]; then
         is_new_json_file=false
         if ! need_update_existing "$final_json_file" "$json_url" "$constellation JSON (實際日期: $actual_date)"; then
             should_download=false

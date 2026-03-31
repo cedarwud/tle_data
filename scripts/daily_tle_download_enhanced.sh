@@ -178,20 +178,29 @@ download_file() {
     
     if curl -L --fail --connect-timeout 30 --max-time 300 --retry 3 \
             -o "$temp_file" "$url"; then
-        
+
+        # 檢查 Celestrak 的「資料未更新」回應（HTTP 200 但內容是純文字錯誤訊息）
+        if grep -q "GP data has not updated" "$temp_file" 2>/dev/null; then
+            local celestrak_msg
+            celestrak_msg=$(cat "$temp_file" | tr '\n' ' ')
+            log_warn "Celestrak 資料尚未更新（將視為已是最新）: $celestrak_msg"
+            rm -f "$temp_file"
+            return 2  # 特殊返回碼：資料未更新，非真正的錯誤
+        fi
+
         # 檢查檔案大小
         local file_size=$(stat -c%s "$temp_file")
         if [[ $file_size -lt 100 ]]; then
             rm -f "$temp_file"
             return 1
         fi
-        
+
         # 原子性移動檔案
         mv "$temp_file" "$output_path"
-        
+
         # 設置檔案時間戳為當前時間
         touch "$output_path"
-        
+
         return 0
     else
         rm -f "$temp_file"
@@ -341,49 +350,45 @@ download_constellation_data() {
     local date_str="$2"
 
     local tle_url="https://celestrak.org/NORAD/elements/gp.php?GROUP=$constellation&FORMAT=tle"
-    local json_url="https://celestrak.org/NORAD/elements/gp.php?GROUP=$constellation&FORMAT=json"
-
-    # 使用臨時檔案名
     local temp_tle_file="$TLE_DATA_DIR/$constellation/tle/temp_${constellation}.tle"
-    local temp_json_file="$TLE_DATA_DIR/$constellation/json/temp_${constellation}.json"
 
     local success_count=0
     local total_count=2
     local updated_count=0
-    
+
     # 追蹤下載和更新的檔案
     declare -a downloaded_files=()
     declare -a updated_files=()
-    
-    # 處理 TLE 檔案
 
-    # 先下載到臨時檔案
-    if download_file "$tle_url" "$temp_tle_file" "$constellation TLE"; then
+    # ── 處理 TLE 檔案 ──────────────────────────────────────────────────────
+    local tle_download_rc=0
+    download_file "$tle_url" "$temp_tle_file" "$constellation TLE" || tle_download_rc=$?
+
+    if [[ $tle_download_rc -eq 2 ]]; then
+        # Celestrak 資料未更新，兩個檔案都視為已是最新
+        success_count=$((success_count + 2))
+    elif [[ $tle_download_rc -eq 0 ]]; then
         if validate_tle_data "$temp_tle_file" "$date_str" "$constellation"; then
-            # 提取實際數據日期
             local actual_date="$TLE_ACTUAL_DATE"
-            if [[ -z "$actual_date" ]]; then
-                actual_date="$date_str"  # 如果無法提取，使用下載日期
-            fi
+            [[ -z "$actual_date" ]] && actual_date="$date_str"
 
             local final_tle_file="$TLE_DATA_DIR/$constellation/tle/${constellation}_${actual_date}.tle"
+            local final_json_file="$TLE_DATA_DIR/$constellation/json/${constellation}_${actual_date}.json"
 
-            # 檢查是否需要更新現有檔案
+            # 檢查是否需要更新 TLE
             local should_update=true
             local is_new_file=true
             if [[ -f "$final_tle_file" ]]; then
                 is_new_file=false
-                if ! need_update_existing "$final_tle_file" "$tle_url" "$constellation TLE (實際日期: $actual_date)"; then
+                if ! need_update_existing "$final_tle_file" "$tle_url" "$constellation TLE"; then
                     should_update=false
                 fi
             fi
 
             if $should_update; then
-                # 移動臨時檔案到最終位置
                 mv "$temp_tle_file" "$final_tle_file"
                 updated_count=$((updated_count + 1))
-                
-                # 記錄下載或更新的檔案
+
                 local file_info="$constellation TLE: ${constellation}_${actual_date}.tle"
                 if $is_new_file; then
                     downloaded_files+=("$file_info")
@@ -392,68 +397,33 @@ download_constellation_data() {
                     updated_files+=("$file_info")
                     log_update "已更新: $file_info"
                 fi
+
+                # ── 從 TLE 本地轉換 JSON（不再向 Celestrak 發第二次請求）────
+                local is_new_json=$( [[ -f "$final_json_file" ]] && echo false || echo true )
+                if python3 "$SCRIPT_DIR/tle_to_json.py" "$final_tle_file" "$final_json_file" 2>/dev/null; then
+                    updated_count=$((updated_count + 1))
+                    local json_info="$constellation JSON: ${constellation}_${actual_date}.json (本地轉換)"
+                    if [[ "$is_new_json" == "true" ]]; then
+                        downloaded_files+=("$json_info")
+                        log_success "已產生: $json_info"
+                    else
+                        updated_files+=("$json_info")
+                        log_update "已更新: $json_info"
+                    fi
+                    success_count=$((success_count + 1))
+                else
+                    log_error "$constellation JSON 轉換失敗"
+                fi
             else
-                # 清理臨時檔案
                 rm -f "$temp_tle_file"
+                # TLE 不需要更新，JSON 也不用重新產生
+                success_count=$((success_count + 1))
             fi
 
             success_count=$((success_count + 1))
         else
             rm -f "$temp_tle_file"
         fi
-    fi
-    
-    # 處理 JSON 檔案
-    # 使用與 TLE 相同的實際日期
-    local actual_date="$TLE_ACTUAL_DATE"
-    if [[ -z "$actual_date" ]]; then
-        actual_date="$date_str"  # 如果無法提取，使用下載日期
-    fi
-
-    local final_json_file="$TLE_DATA_DIR/$constellation/json/${constellation}_${actual_date}.json"
-
-    # 檢查是否需要更新現有檔案
-    # 重要：如果 TLE 被更新（updated_count > 0），強制下載 JSON 以保持同步
-    local should_download=true
-    local is_new_json_file=true
-
-    if [[ $updated_count -gt 0 ]]; then
-        # TLE 剛被下載/更新，強制下載對應的 JSON
-        if [[ -f "$final_json_file" ]]; then
-            is_new_json_file=false
-        fi
-        should_download=true
-    elif [[ -f "$final_json_file" ]]; then
-        is_new_json_file=false
-        if ! need_update_existing "$final_json_file" "$json_url" "$constellation JSON (實際日期: $actual_date)"; then
-            should_download=false
-        fi
-    fi
-
-    if $should_download; then
-        # 下載到臨時檔案
-        if download_file "$json_url" "$temp_json_file" "$constellation JSON"; then
-            if validate_json_data "$temp_json_file" "$date_str" "$constellation"; then
-                # 移動臨時檔案到最終位置
-                mv "$temp_json_file" "$final_json_file"
-                updated_count=$((updated_count + 1))
-                success_count=$((success_count + 1))
-                
-                # 記錄下載或更新的檔案
-                local file_info="$constellation JSON: ${constellation}_${actual_date}.json"
-                if $is_new_json_file; then
-                    downloaded_files+=("$file_info")
-                    log_success "已下載: $file_info"
-                else
-                    updated_files+=("$file_info")
-                    log_update "已更新: $file_info"
-                fi
-            else
-                rm -f "$temp_json_file"
-            fi
-        fi
-    else
-        success_count=$((success_count + 1))
     fi
     
     # 將下載和更新的檔案信息保存到全局變量
@@ -579,14 +549,14 @@ main() {
     # 確保目錄存在
     mkdir -p "$TLE_DATA_DIR"/{starlink,oneweb}/{tle,json}
     
-    # 下載數據
+    # 下載數據（用 || 捕捉非零返回碼，避免 set -e 在單一失敗時中止整個腳本）
+    local starlink_result=0
     echo "📡 開始下載 Starlink 數據... ($(date '+%H:%M:%S'))"
-    download_constellation_data "starlink" "$date_str"
-    local starlink_result=$?
-    
+    download_constellation_data "starlink" "$date_str" || starlink_result=$?
+
+    local oneweb_result=0
     echo "🛰️ 開始下載 OneWeb 數據... ($(date '+%H:%M:%S'))"
-    download_constellation_data "oneweb" "$date_str"
-    local oneweb_result=$?
+    download_constellation_data "oneweb" "$date_str" || oneweb_result=$?
     
 
     # 生成簡化報告

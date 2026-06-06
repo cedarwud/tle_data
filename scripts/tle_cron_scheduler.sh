@@ -2,7 +2,7 @@
 # =============================================================================
 # TLE 數據自動排程下載系統
 # 功能：
-# 1. 設置 cron 排程（每 6 小時執行一次）
+# 1. 設置 cron 排程（每天 02:00 和 14:00 執行）
 # 2. 管理排程任務（啟用/停用/狀態檢查）
 # 3. 日誌管理和錯誤處理
 # =============================================================================
@@ -45,9 +45,9 @@ create_directories() {
 
 # 生成 cron 條目
 generate_cron_entry() {
-    local cron_entry="# TLE 數據自動下載（每 6 小時執行一次）
-# 分別在 02:00, 08:00, 14:00, 20:00 執行
-0 2,8,14,20 * * * $TLE_SCRIPT >> $LOG_FILE 2>&1"
+    local cron_entry="# TLE 數據自動下載（每天 02:00 和 14:00 執行）
+# 分別在 02:00, 14:00 執行
+0 2,14 * * * $TLE_SCRIPT >> $LOG_FILE 2>&1"
     
     echo "$cron_entry"
 }
@@ -82,7 +82,7 @@ install_cron() {
     # 安裝新的 crontab
     if crontab "$temp_cron"; then
         log_success "TLE 下載排程已成功安裝"
-        log_info "執行時間: 每天 02:00, 08:00, 14:00, 20:00 (UTC)"
+        log_info "執行時間: 每天 02:00, 14:00 (UTC)"
         log_info "日誌文件: $LOG_FILE"
     else
         log_error "安裝 cron 排程失敗"
@@ -104,7 +104,7 @@ remove_cron() {
     
     # 獲取現有 crontab 內容並移除相關條目
     local temp_cron=$(mktemp)
-    crontab -l 2>/dev/null | grep -v "$TLE_SCRIPT" | grep -v "# TLE 數據自動下載" > "$temp_cron" || true
+    crontab -l 2>/dev/null | grep -v "$TLE_SCRIPT" | grep -v "# TLE 數據自動下載" | grep -v "# 分別在" > "$temp_cron" || true
     
     # 移除空行
     sed -i '/^$/d' "$temp_cron"
@@ -146,7 +146,7 @@ show_status() {
         # 顯示下一次執行時間
         echo
         echo "下次執行時間:"
-        echo "  今天: $(date -d 'today 02:00' '+%Y-%m-%d %H:%M' 2>/dev/null || echo 'N/A'), $(date -d 'today 08:00' '+%H:%M' 2>/dev/null || echo 'N/A'), $(date -d 'today 14:00' '+%H:%M' 2>/dev/null || echo 'N/A'), $(date -d 'today 20:00' '+%H:%M' 2>/dev/null || echo 'N/A')"
+        echo "  今天: $(date -d 'today 02:00' '+%Y-%m-%d %H:%M' 2>/dev/null || echo 'N/A'), $(date -d 'today 14:00' '+%H:%M' 2>/dev/null || echo 'N/A')"
         echo "  明天: $(date -d 'tomorrow 02:00' '+%Y-%m-%d %H:%M' 2>/dev/null || echo 'N/A')"
         
     else
@@ -220,7 +220,7 @@ show_help() {
     echo "用法: $0 [命令]"
     echo
     echo "命令:"
-    echo "  install    - 安裝 cron 排程（每 6 小時執行一次）"
+    echo "  install    - 安裝 cron 排程（每天 02:00 和 14:00 執行）"
     echo "  remove     - 移除 cron 排程"
     echo "  status     - 顯示排程狀態和配置信息"
     echo "  logs [n]   - 顯示最近的日誌（預設 20 行）"
